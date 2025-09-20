@@ -3,7 +3,8 @@
 # ==============================================================================
 # Sing-Box Multi-Protocol Installation and Configuration Script
 # This script automates the installation of Sing-Box and sets up a configuration
-# for VLESS Reality, TUIC v5, Hysteria 2, and VMess over WebSocket.
+# for VLESS Reality, TUIC v5, Hysteria 2, VMess over WebSocket, and VLESS over
+# WebSocket with TLS.
 # It now includes an option to configure a Cloudflare Argo Tunnel for VMess-WS
 # with a custom host header.
 #
@@ -96,7 +97,7 @@ install_argo() {
     read -r ARGO_TOKEN
 
     mkdir -p /etc/cloudflared
-    echo "url: http://localhost:8080" > /etc/cloudflared/config.yml
+    echo "url: http://localhost:${VMESS_WS_PORT}" > /etc/cloudflared/config.yml
     echo "tunnel: ${ARGO_DOMAIN}" >> /etc/cloudflared/config.yml
     echo "credentials-file: /etc/cloudflared/cert.pem" >> /etc/cloudflared/config.yml
 
@@ -147,6 +148,12 @@ create_config() {
     read -r HYSTERIA2_PORT
     echo "Enter port for TUIC v5 (e.g., 443):"
     read -r TUIC_PORT
+    echo "Enter port for VMess over WebSocket (e.g., 8080):"
+    read -r VMESS_WS_PORT
+    echo "Enter port for VLESS over WebSocket TLS (e.g., 443):"
+    read -r VLESS_WS_PORT
+    echo "Enter path for VLESS over WebSocket TLS (e.g., /vless):"
+    read -r VLESS_WS_PATH
 
     echo "Generating a sample config.json file with multiple protocols..."
     cat << EOF > "${CONFIG_PATH}/config.json"
@@ -251,7 +258,7 @@ create_config() {
       "type": "vmess",
       "tag": "vmess-in",
       "listen": "127.0.0.1",
-      "listen_port": 8080,
+      "listen_port": ${VMESS_WS_PORT},
       "users": [
         {
           "uuid": "${UUID}"
@@ -259,6 +266,34 @@ create_config() {
       ],
       "transport": {
         "type": "ws"
+      }
+    },
+    {
+      "type": "vless",
+      "tag": "vless-ws-in",
+      "listen": "::",
+      "listen_port": ${VLESS_WS_PORT},
+      "users": [
+        {
+          "uuid": "${UUID}"
+        }
+      ],
+      "transport": {
+        "type": "ws",
+        "path": "${VLESS_WS_PATH}"
+      },
+      "tls": {
+        "enabled": true,
+        "server_name": "${DOMAIN_NAME}",
+        "alpn": [
+          "h2",
+          "http/1.1"
+        ],
+        "acme": {
+          "domain": "${DOMAIN_NAME}",
+          "email": "root@${DOMAIN_NAME}",
+          "provider": "letsencrypt"
+        }
       }
     }
   ],
@@ -324,6 +359,10 @@ generate_share_links() {
     VMESS_WS_BASE64=$(echo -n "${VMESS_WS_CONFIG}" | base64 | tr -d '\n' | tr -d ' ' | tr -d '\r')
     VMESS_WS_SHARE_LINK="vmess://${VMESS_WS_BASE64}"
     echo "VMess WS: ${VMESS_WS_SHARE_LINK}"
+
+    # VLESS WS TLS
+    VLESS_WS_TLS_SHARE_LINK="vless://${UUID}@${DOMAIN_NAME}:${VLESS_WS_PORT}?security=tls&encryption=none&type=ws&host=${DOMAIN_NAME}&path=${VLESS_WS_PATH}#VLESS-WS-${DOMAIN_NAME}"
+    echo "VLESS WS TLS: ${VLESS_WS_TLS_SHARE_LINK}"
 }
 
 # Generate and print subscription link.
@@ -334,6 +373,7 @@ generate_subscription_link() {
         "hysteria2://${UUID}@${DOMAIN_NAME}:${HYSTERIA2_PORT}?insecure=1&upmbps=100&downmbps=100#Hysteria2-${DOMAIN_NAME}"
         "tuic://${UUID}:${UUID}@${DOMAIN_NAME}:${TUIC_PORT}?congestion_control=bbr&udp_relay_mode=native&zero_rtt_handshake=false&disable_sni=true&alpn=h3#TUIC-V5-${DOMAIN_NAME}"
         "vmess://${VMESS_WS_BASE64}"
+        "vless://${UUID}@${DOMAIN_NAME}:${VLESS_WS_PORT}?security=tls&encryption=none&type=ws&host=${DOMAIN_NAME}&path=${VLESS_WS_PATH}#VLESS-WS-${DOMAIN_NAME}"
     )
 
     # Join the links with newlines and Base64 encode them
