@@ -4,7 +4,8 @@
 # Sing-Box Multi-Protocol Installation and Configuration Script
 # This script automates the installation of Sing-Box and sets up a configuration
 # for VLESS Reality, TUIC v5, Hysteria 2, and VMess over WebSocket.
-# It now includes an option to configure a Cloudflare Argo Tunnel for VMess-WS.
+# It now includes an option to configure a Cloudflare Argo Tunnel for VMess-WS
+# with a custom host header.
 #
 # NOTE: This script must be run as root or with sudo.
 # ==============================================================================
@@ -17,6 +18,7 @@ LOG_PATH="/var/log/sing-box"
 SINGBOX_REPO_URL="[https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-$(uname](https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-$(uname) -s | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/x86_64/amd64/g' | sed 's/aarch64/arm64/g').zip"
 CLOUDFLARED_REPO_URL="[https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-$(uname](https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-$(uname) -s | tr '[:upper:]' '[:lower:]')-$(uname -m).zip"
 CLOUDFLARED_PATH="/usr/local/bin/cloudflared"
+CLOUDFLARED_SERVICE="cloudflared"
 
 # VLESS Reality Hostnames for SNI
 REALITY_DEST_HOSTNAMES=(
@@ -105,7 +107,7 @@ EOF
     chmod 600 /etc/cloudflared/cert.pem
 
     # Create systemd service for cloudflared
-    cat << EOF > /etc/systemd/system/cloudflared.service
+    cat << EOF > "/etc/systemd/system/${CLOUDFLARED_SERVICE}.service"
 [Unit]
 Description=Cloudflare Tunnel
 After=network.target
@@ -123,10 +125,10 @@ EOF
     echo "Reloading systemd daemon for cloudflared..."
     systemctl daemon-reload
     echo "Enabling and starting the cloudflared service..."
-    systemctl enable cloudflared
-    systemctl start cloudflared
+    systemctl enable "${CLOUDFLARED_SERVICE}"
+    systemctl start "${CLOUDFLARED_SERVICE}"
     echo "Cloudflared service status:"
-    systemctl status cloudflared
+    systemctl status "${CLOUDFLARED_SERVICE}"
 }
 
 # Create a multi-protocol configuration file.
@@ -392,26 +394,65 @@ EOF
     systemctl status "${SERVICE_NAME}"
 }
 
+# Uninstalls the script and all associated files/services.
+uninstall_script() {
+    read -p "Are you sure you want to uninstall Sing-Box and Cloudflare Tunnel? This will delete all files and services. (y/n): " -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "Uninstallation cancelled."
+        exit 1
+    fi
+
+    echo "Stopping and disabling services..."
+    systemctl stop "${SERVICE_NAME}"
+    systemctl disable "${SERVICE_NAME}"
+    systemctl stop "${CLOUDFLARED_SERVICE}" >/dev/null 2>&1
+    systemctl disable "${CLOUDFLARED_SERVICE}" >/dev/null 2>&1
+
+    echo "Removing service files..."
+    rm -f "/etc/systemd/system/${SERVICE_NAME}.service"
+    rm -f "/etc/systemd/system/${CLOUDFLARED_SERVICE}.service" >/dev/null 2>&1
+    systemctl daemon-reload
+
+    echo "Removing binaries and configuration files..."
+    rm -f "${INSTALL_PATH}/sing-box"
+    rm -f "${CLOUDFLARED_PATH}" >/dev/null 2>&1
+    rm -rf "${CONFIG_PATH}"
+    rm -rf "/etc/cloudflared"
+
+    echo "Uninstallation complete. All files and services have been removed."
+}
+
+
 # --- Main script execution ---
 check_root
-install_dependencies
-install_singbox
-generate_keys
 
-echo "Do you want to use Cloudflare Argo Tunnel for VMess over WebSocket? (y/n)"
-read -r use_argo_tunnel
+echo "Choose an option:"
+echo "1) Install Sing-Box and configure services"
+echo "2) Uninstall Sing-Box and all associated files"
+read -p "Enter your choice (1 or 2): " -r choice
 
-if [[ "${use_argo_tunnel}" =~ ^[Yy]$ ]]; then
-    install_argo
-else
+if [[ "${choice}" == "1" ]]; then
+    install_dependencies
+    install_singbox
+    generate_keys
+    echo "Do you want to use Cloudflare Argo Tunnel for VMess over WebSocket? (y/n)"
+    read -r use_argo_tunnel
+
+    if [[ "${use_argo_tunnel}" =~ ^[Yy]$ ]]; then
+        install_argo
+    fi
+
     create_config
+    generate_share_links
+    generate_subscription_link
+    create_service
+    echo ""
+    echo "Sing-Box installation and configuration is complete!"
+    echo "Please verify the configuration file and make sure your firewall allows traffic on the configured ports."
+    echo "If you need to change the configuration, edit ${CONFIG_PATH}/config.json and then restart the service with 'sudo systemctl restart ${SERVICE_NAME}'."
+elif [[ "${choice}" == "2" ]]; then
+    uninstall_script
+else
+    echo "Invalid choice. Please enter '1' or '2'."
 fi
-
-generate_share_links
-generate_subscription_link
-create_service
-
-echo ""
-echo "Sing-Box installation and configuration is complete!"
-echo "Please verify the configuration file and make sure your firewall allows traffic on the configured ports."
-echo "If you need to change the configuration, edit ${CONFIG_PATH}/config.json and then restart the service with 'sudo systemctl restart ${SERVICE_NAME}'."
