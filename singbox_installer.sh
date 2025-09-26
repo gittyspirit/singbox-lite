@@ -5,8 +5,7 @@
 # This script automates the installation of Sing-Box and sets up a configuration
 # for VLESS Reality, TUIC v5, Hysteria 2, VMess over WebSocket, and VLESS over
 # WebSocket with TLS.
-# It now includes an option to configure a Cloudflare Argo Tunnel for VMess-WS
-# with a custom host header.
+# It now includes an option to configure a Cloudflare Argo Tunnel for VMess-WS.
 #
 # NOTE: This script must be run as root or with sudo.
 # ==============================================================================
@@ -20,6 +19,21 @@ SINGBOX_REPO_URL="[https://github.com/SagerNet/sing-box/releases/latest/download
 CLOUDFLARED_REPO_URL="[https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-$(uname](https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-$(uname) -s | tr '[:upper:]' '[:lower:]')-$(uname -m).zip"
 CLOUDFLARED_PATH="/usr/local/bin/cloudflared"
 CLOUDFLARED_SERVICE="cloudflared"
+
+# Global variables to store user input
+DOMAIN_NAME=""
+VLESS_REALITY_PORT=""
+HYSTERIA2_PORT=""
+TUIC_PORT=""
+VMESS_WS_PORT=""
+VLESS_WS_PORT=""
+VLESS_WS_PATH=""
+ARGO_DOMAIN=""
+VMESS_WS_HOST=""
+UUID=""
+REALITY_PUBLIC_KEY=""
+REALITY_PRIVATE_KEY=""
+REALITY_SHORT_ID=""
 
 # VLESS Reality Hostnames for SNI
 REALITY_DEST_HOSTNAMES=(
@@ -97,6 +111,7 @@ install_argo() {
     read -r ARGO_TOKEN
 
     mkdir -p /etc/cloudflared
+    # NOTE: VMESS_WS_PORT must be set globally before this function runs
     echo "url: http://localhost:${VMESS_WS_PORT}" > /etc/cloudflared/config.yml
     echo "tunnel: ${ARGO_DOMAIN}" >> /etc/cloudflared/config.yml
     echo "credentials-file: /etc/cloudflared/cert.pem" >> /etc/cloudflared/config.yml
@@ -148,12 +163,11 @@ create_config() {
     read -r HYSTERIA2_PORT
     echo "Enter port for TUIC v5 (e.g., 443):"
     read -r TUIC_PORT
-    echo "Enter port for VMess over WebSocket (e.g., 8080):"
-    read -r VMESS_WS_PORT
-    echo "Enter port for VLESS over WebSocket TLS (e.g., 443):"
+    echo "Enter port for VLESS over WebSocket TLS (e.g., 2053):"
     read -r VLESS_WS_PORT
     echo "Enter path for VLESS over WebSocket TLS (e.g., /vless):"
     read -r VLESS_WS_PATH
+
 
     echo "Generating a sample config.json file with multiple protocols..."
     cat << EOF > "${CONFIG_PATH}/config.json"
@@ -166,7 +180,7 @@ create_config() {
   "inbounds": [
     {
       "type": "vless",
-      "tag": "vless-in",
+      "tag": "vless-reality-in",
       "listen": "::",
       "listen_port": ${VLESS_REALITY_PORT},
       "users": [
@@ -256,7 +270,7 @@ create_config() {
     },
     {
       "type": "vmess",
-      "tag": "vmess-in",
+      "tag": "vmess-ws-in",
       "listen": "127.0.0.1",
       "listen_port": ${VMESS_WS_PORT},
       "users": [
@@ -270,7 +284,7 @@ create_config() {
     },
     {
       "type": "vless",
-      "tag": "vless-ws-in",
+      "tag": "vless-ws-tls-in",
       "listen": "::",
       "listen_port": ${VLESS_WS_PORT},
       "users": [
@@ -342,8 +356,21 @@ generate_share_links() {
     TUIC_SHARE_LINK="tuic://${UUID}:${UUID}@${DOMAIN_NAME}:${TUIC_PORT}?congestion_control=bbr&udp_relay_mode=native&zero_rtt_handshake=false&disable_sni=true&alpn=h3#TUIC-V5-${DOMAIN_NAME}"
     echo "TUIC v5: ${TUIC_SHARE_LINK}"
 
-    # VMess WebSocket
-    VMESS_WS_CONFIG=$(jq -n --arg name "VMess-WS-${ARGO_DOMAIN}" --arg host "${VMESS_WS_HOST}" --arg port "443" --arg uuid "$UUID" '{
+    # VMess WebSocket (Uses Argo Tunnel domain if set, otherwise uses DOMAIN_NAME)
+    VMESS_ADDRESS=${ARGO_DOMAIN:-${DOMAIN_NAME}}
+    VMESS_PORT_SHARE=443 # Always 443 if using Argo, otherwise the open VMess port
+    
+    if [[ "${use_argo_tunnel}" =~ ^[Yy]$ ]]; then
+        # Use ARGO_DOMAIN and 443 for external connection
+        VMESS_PORT_SHARE=443
+    else
+        # Use DOMAIN_NAME and the user-specified VMESS_WS_PORT
+        VMESS_PORT_SHARE=${VMESS_WS_PORT}
+        # If not using Argo, the VMess Host Name should be the DOMAIN_NAME for TLS verification
+        VMESS_WS_HOST=${DOMAIN_NAME}
+    fi
+    
+    VMESS_WS_CONFIG=$(jq -n --arg name "VMess-WS-Argo-${VMESS_ADDRESS}" --arg host "${VMESS_ADDRESS}" --arg port "${VMESS_PORT_SHARE}" --arg uuid "$UUID" --arg wshost "${VMESS_WS_HOST}" '{
         "v": "2",
         "ps": $name,
         "add": $host,
@@ -352,7 +379,7 @@ generate_share_links() {
         "aid": "0",
         "net": "ws",
         "type": "none",
-        "host": $host,
+        "host": $wshost,
         "path": "/",
         "tls": "tls"
     }')
@@ -476,6 +503,11 @@ if [[ "${choice}" == "1" ]]; then
     install_dependencies
     install_singbox
     generate_keys
+    
+    # --- Prompt for VMess Port first, as it's needed for Argo Tunnel setup ---
+    echo "Enter port for VMess over WebSocket (e.g., 8080). This is the internal port if using Argo:"
+    read -r VMESS_WS_PORT
+    
     echo "Do you want to use Cloudflare Argo Tunnel for VMess over WebSocket? (y/n)"
     read -r use_argo_tunnel
 
